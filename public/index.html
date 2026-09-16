@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teste de Precisão do Mouse</title>
+<style>
+  :root {
+    --bg: #14141a;
+    --panel: #1e1e26;
+    --text: #ffffff;
+    --muted: #b4b4b4;
+    --green: #2ea043;
+    --red: #c83c3c;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+
+  .app {
+    width: 100%;
+    max-width: 900px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .topbar {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .topbar .score, .topbar .time {
+    font-size: 1.25rem;
+    font-weight: 700;
+    min-width: 140px;
+  }
+
+  .topbar .time { text-align: right; }
+
+  .topbar .status {
+    flex: 1;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+
+  #game {
+    width: 100%;
+    aspect-ratio: 860 / 420;
+    background: #14141a;
+    border-radius: 10px;
+    display: block;
+    cursor: crosshair;
+    border: 1px solid #2a2a33;
+  }
+
+  .controls {
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .difficulty-row {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 420px;
+  }
+
+  .difficulty-row label {
+    font-size: 0.95rem;
+    color: var(--muted);
+  }
+
+  .difficulty-row input[type="range"] {
+    width: 100%;
+    accent-color: #4a9eff;
+  }
+
+  .button-row {
+    display: flex;
+    gap: 20px;
+  }
+
+  .btn {
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-weight: 700;
+    font-size: 1rem;
+    padding: 10px 26px;
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+
+  .btn:hover { filter: brightness(1.1); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+
+  .btn-start { background: var(--green); }
+  .btn-reset { background: var(--red); }
+
+  .server-info {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    padding-top: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="topbar">
+    <div class="score">Pontuação: <span id="score">0</span></div>
+    <div class="status" id="status">Pressione Iniciar para jogar</div>
+    <div class="time">Tempo: <span id="time">30</span>s</div>
+  </div>
+
+  <canvas id="game" width="860" height="420"></canvas>
+
+  <div class="controls">
+    <div class="difficulty-row">
+      <label for="difficulty">Dificuldade (velocidade dos blocos): <span id="difficultyValue">3</span></label>
+      <input type="range" id="difficulty" min="1" max="10" value="3">
+    </div>
+    <div class="button-row">
+      <button id="startBtn" class="btn btn-start">Iniciar</button>
+      <button id="resetBtn" class="btn btn-reset">Resetar</button>
+    </div>
+  </div>
+
+  <div class="server-info">
+    Servidor (Java): {{SERVER_IP}} &mdash; Página gerada em {{SERVER_TIME}}
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- Constantes ----------
+  var GAME_DURATION_SECONDS = 30;
+  var MAX_BLOCKS = 4;
+  var BLOCK_SIZE = 55;
+  var MARGIN = 20;
+
+  // ---------- Elementos ----------
+  var canvas = document.getElementById("game");
+  var ctx = canvas.getContext("2d");
+  var scoreEl = document.getElementById("score");
+  var timeEl = document.getElementById("time");
+  var statusEl = document.getElementById("status");
+  var difficultyInput = document.getElementById("difficulty");
+  var difficultyValueEl = document.getElementById("difficultyValue");
+  var startBtn = document.getElementById("startBtn");
+  var resetBtn = document.getElementById("resetBtn");
+
+  // ---------- Estado do jogo ----------
+  var score = 0;
+  var secondsLeft = GAME_DURATION_SECONDS;
+  var active = false;
+  var blocks = [];
+  var lastSpawn = 0;
+  var spawnIntervalMs = 1200;
+  var blockLifespanMs = 1800;
+  var countdownTimerId = null;
+
+  function setDifficulty(level) {
+    // Quanto maior o nível, menor o intervalo entre spawns e menor
+    // o tempo de vida de cada bloco (aparecem e somem mais rápido).
+    spawnIntervalMs = Math.max(220, 1300 - level * 105);
+    blockLifespanMs = Math.max(450, 2200 - level * 155);
+  }
+
+  difficultyInput.addEventListener("input", function () {
+    difficultyValueEl.textContent = difficultyInput.value;
+    setDifficulty(parseInt(difficultyInput.value, 10));
+  });
+  setDifficulty(parseInt(difficultyInput.value, 10));
+
+  // ---------- Bloco ----------
+  function createBlock(x, y, size, spawnTime, lifespan) {
+    return { x: x, y: y, size: size, spawnTime: spawnTime, lifespan: lifespan, popFrame: -1 };
+  }
+
+  function blockContains(b, x, y) {
+    return x >= b.x && x <= b.x + b.size && y >= b.y && y <= b.y + b.size;
+  }
+
+  function countAliveBlocks() {
+    var count = 0;
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].popFrame < 0) count++;
+    }
+    return count;
+  }
+
+  function spawnBlock(now) {
+    var w = Math.max(1, canvas.width - BLOCK_SIZE - MARGIN * 2);
+    var h = Math.max(1, canvas.height - BLOCK_SIZE - MARGIN * 2);
+    var x = MARGIN + Math.floor(Math.random() * w);
+    var y = MARGIN + Math.floor(Math.random() * h);
+    blocks.push(createBlock(x, y, BLOCK_SIZE, now, blockLifespanMs));
+  }
+
+  // ---------- Interação (arrastar/mover o mouse até o bloco) ----------
+  function pointerToCanvasCoords(clientX, clientY) {
+    var rect = canvas.getBoundingClientRect();
+    var scaleX = canvas.width / rect.width;
+    var scaleY = canvas.height / rect.height;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }
+
+  function checkHit(x, y) {
+    if (!active) return;
+    var target = null;
+    var bestRemaining = Infinity;
+    var now = performance.now();
+    for (var i = 0; i < blocks.length; i++) {
+      var b = blocks[i];
+      if (b.popFrame >= 0) continue;
+      if (blockContains(b, x, y)) {
+        var remaining = b.lifespan - (now - b.spawnTime);
+        if (remaining < bestRemaining) {
+          bestRemaining = remaining;
+          target = b;
+        }
+      }
+    }
+    if (target) {
+      target.popFrame = 0;
+      addScore();
+    }
+  }
+
+  function handlePointerEvent(e) {
+    var point;
+    if (e.touches && e.touches.length > 0) {
+      point = pointerToCanvasCoords(e.touches[0].clientX, e.touches[0].clientY);
+    } else {
+      point = pointerToCanvasCoords(e.clientX, e.clientY);
+    }
+    checkHit(point.x, point.y);
+  }
+
+  canvas.addEventListener("mousemove", handlePointerEvent);
+  canvas.addEventListener("mousedown", handlePointerEvent);
+  canvas.addEventListener("touchmove", function (e) { handlePointerEvent(e); e.preventDefault(); }, { passive: false });
+
+  // ---------- Placar ----------
+  function addScore() {
+    score++;
+    scoreEl.textContent = String(score);
+  }
+
+  // ---------- Desenho ----------
+  function blend(c1, c2, ratio) {
+    ratio = Math.max(0, Math.min(1, ratio));
+    var r = Math.round(c1[0] * (1 - ratio) + c2[0] * ratio);
+    var g = Math.round(c1[1] * (1 - ratio) + c2[1] * ratio);
+    var bl = Math.round(c1[2] * (1 - ratio) + c2[2] * ratio);
+    return "rgb(" + r + "," + g + "," + bl + ")";
+  }
+
+  function roundRectPath(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawBlock(b, now, isOldest) {
+    var cx = b.x + b.size / 2;
+    var cy = b.y + b.size / 2;
+
+    if (b.popFrame >= 0) {
+      var t = b.popFrame / 10;
+      var extra = 25 * t;
+      var alpha = Math.max(0, 1 - t);
+      ctx.fillStyle = "rgba(80,220,120," + alpha.toFixed(2) + ")";
+      ctx.beginPath();
+      ctx.arc(cx, cy, (b.size + extra) / 2, 0, Math.PI * 2);
+      ctx.fill();
+      return;
+    }
+
+    var lifeFraction = 1 - (now - b.spawnTime) / b.lifespan;
+    lifeFraction = Math.max(0, Math.min(1, lifeFraction));
+
+    var color = isOldest
+      ? blend([255, 200, 60], [230, 55, 55], 1 - lifeFraction)
+      : blend([90, 170, 255], [230, 140, 60], 1 - lifeFraction);
+
+    ctx.fillStyle = color;
+    roundRectPath(b.x, b.y, b.size, b.size, 14);
+    ctx.fill();
+
+    if (isOldest) {
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2.5;
+      roundRectPath(b.x, b.y, b.size, b.size, 14);
+      ctx.stroke();
+    }
+
+    // Anel de contagem regressiva: encolhe conforme o bloco se aproxima de sumir
+    var radius = b.size / 2 + 7;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(255,255,255,0.3)";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * lifeFraction);
+    ctx.stroke();
+  }
+
+  function render(now) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    var sorted = blocks.slice().sort(function (a, b2) { return a.spawnTime - b2.spawnTime; });
+    for (var i = 0; i < sorted.length; i++) {
+      drawBlock(sorted[i], now, i === 0);
+    }
+
+    if (!active && blocks.length === 0) {
+      ctx.fillStyle = "#787878";
+      ctx.font = "16px -apple-system, Arial, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Área de jogo", canvas.width / 2, canvas.height / 2);
+    }
+  }
+
+  // ---------- Loop principal (spawn + atualização + desenho) ----------
+  function tick(now) {
+    if (active) {
+      if (now - lastSpawn >= spawnIntervalMs && countAliveBlocks() < MAX_BLOCKS) {
+        spawnBlock(now);
+        lastSpawn = now;
+      }
+      for (var i = blocks.length - 1; i >= 0; i--) {
+        var b = blocks[i];
+        if (b.popFrame >= 0) {
+          b.popFrame++;
+          if (b.popFrame > 10) blocks.splice(i, 1);
+        } else if (now - b.spawnTime > b.lifespan) {
+          blocks.splice(i, 1);
+        }
+      }
+    }
+    render(now);
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- Controle do jogo ----------
+  function startGame() {
+    if (active) return;
+    active = true;
+    score = 0;
+    secondsLeft = GAME_DURATION_SECONDS;
+    scoreEl.textContent = "0";
+    timeEl.textContent = String(secondsLeft);
+    statusEl.textContent = "Arraste o mouse até os blocos!";
+    startBtn.disabled = true;
+
+    blocks = [];
+    lastSpawn = performance.now();
+
+    if (countdownTimerId) clearInterval(countdownTimerId);
+    countdownTimerId = setInterval(function () {
+      secondsLeft--;
+      timeEl.textContent = String(secondsLeft);
+      if (secondsLeft <= 0) endGame();
+    }, 1000);
+  }
+
+  function endGame() {
+    active = false;
+    if (countdownTimerId) clearInterval(countdownTimerId);
+    statusEl.textContent = "Tempo esgotado! Pontuação final: " + score + " — clique em Resetar para jogar de novo";
+    startBtn.disabled = true;
+  }
+
+  function resetGame() {
+    if (countdownTimerId) clearInterval(countdownTimerId);
+    active = false;
+    score = 0;
+    secondsLeft = GAME_DURATION_SECONDS;
+    scoreEl.textContent = "0";
+    timeEl.textContent = String(GAME_DURATION_SECONDS);
+    statusEl.textContent = "Pressione Iniciar para jogar";
+    blocks = [];
+    startBtn.disabled = false;
+  }
+
+  startBtn.addEventListener("click", startGame);
+  resetBtn.addEventListener("click", resetGame);
+
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
