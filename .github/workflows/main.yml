@@ -1,53 +1,66 @@
-name: Publicacao Automatica - Game Java
+name: Publicação automática com Backup e Notificações
 
 on:
   push:
     branches: [ "main" ]
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Baixar código do repositório
+        uses: actions/checkout@v3
 
-      - name: Cria chave privada temporaria
+      - name: Criar arquivo temporário da chave SSH
         run: |
           echo "${{ secrets.KEY }}" > /tmp/private_key
           chmod 600 /tmp/private_key
 
-      - name: Garantir que o diretorio da aplicacao existe na VM
+      - name: Garantir pasta da aplicação
         run: |
           ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
-          "sudo mkdir -p /home/ubuntu/gamejava"
+          "sudo mkdir -p /home/ubuntu/gamejava && sudo chown -R ubuntu:ubuntu /home/ubuntu/gamejava"
 
-      - name: Ajustar permissoes no servidor
+      # --- REQUISITO: REALIZAR BACKUP ANTES DA SUBSTITUIÇÃO ---
+      - name: Criar Backup da aplicação atual
         run: |
           ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
-          "sudo chown -R ubuntu:ubuntu /home/ubuntu/gamejava && sudo chmod -R 755 /home/ubuntu/gamejava"
+          "sudo mkdir -p /home/ubuntu/backups && if [ -d '/home/ubuntu/gamejava' ] && [ \"\$(ls -A /home/ubuntu/gamejava)\" ]; then tar -czf /home/ubuntu/backups/gamejava_backup_\$(date +'%Y%m%d_%H%M%S').tar.gz -C /home/ubuntu/gamejava .; fi"
 
-      - name: Transferir arquivos da aplicacao (Java + Public)
+      # --- TRANSFERÊNCIA E COMPILAÇÃO ---
+      - name: Transferir novos arquivos da aplicação
         run: |
           scp -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r ${{ github.workspace }}/* ubuntu@${{ secrets.HOST }}:/home/ubuntu/gamejava
 
-      - name: Compilar codigo Java no servidor
+      - name: Compilar o código Java na VM
         run: |
           ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
           "cd /home/ubuntu/gamejava && javac Server.java"
 
-      - name: Reiniciar o servico da aplicacao Java
+      - name: Reiniciar o serviço da aplicação Java
         run: |
           ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
           "sudo systemctl restart gamejava.service"
 
-      - name: Limpa arquivo de chave privada
-        if: always()
+      - name: Limpar chave privada temporária
         run: |
           rm -f /tmp/private_key
 
-      - name: Notificar pelo Slack (Opcional)
-        continue-on-error: true
+      # --- REQUISITO: NOTIFICAÇÃO DE SUCESSO (DISCORD OU SLACK) ---
+      - name: Notificar Sucesso (Discord)
+        if: success()
         run: |
-          curl -X POST -H 'Content-type: application/json' \
-            --data '{"text":"Deploy do Game Java realizado com sucesso!"}' \
-            ${{ secrets.SLACK }}
+          curl -H "Content-Type: application/json" \
+          -X POST \
+          -d '{"content": "✅ **Deploy realizado com sucesso!**\n- **Repositório:** `${{ github.repository }}`\n- **Commit:** `${{ github.sha }}`\n- **Servidor:** `${{ secrets.HOST }}`"}' \
+          ${{ secrets.DISCORD_WEBHOOK }}
+
+      # --- REQUISITO: NOTIFICAÇÃO DE ERRO (DISCORD OU SLACK) ---
+      - name: Notificar Falha/Erro (Discord)
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" \
+          -X POST \
+          -d '{"content": "🚨 **FALHA NO DEPLOY!**\nO processo de publicação falhou. Verifique os logs no GitHub Actions.\n- **Repositório:** `${{ github.repository }}`\n- **Commit:** `${{ github.sha }}`"}' \
+          ${{ secrets.DISCORD_WEBHOOK }}
