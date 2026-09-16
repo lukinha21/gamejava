@@ -17,16 +17,16 @@ jobs:
           echo "${{ secrets.KEY }}" > /tmp/private_key
           chmod 600 /tmp/private_key
 
-      - name: Garantir pasta da aplicação
+      - name: Garantir pastas e permissões na VM
         run: |
           ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
-          "sudo mkdir -p /home/ubuntu/gamejava && sudo chown -R ubuntu:ubuntu /home/ubuntu/gamejava"
+          "sudo mkdir -p /home/ubuntu/gamejava /home/ubuntu/backups && sudo chown -R ubuntu:ubuntu /home/ubuntu/gamejava /home/ubuntu/backups"
 
-      # --- REQUISITO: REALIZAR BACKUP ANTES DA SUBSTITUIÇÃO ---
+      # --- REQUISITO: BACKUP ANTES DA SUBSTITUIÇÃO ---
       - name: Criar Backup da aplicação atual
         run: |
           ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
-          "sudo mkdir -p /home/ubuntu/backups && if [ -d '/home/ubuntu/gamejava' ] && [ \"\$(ls -A /home/ubuntu/gamejava)\" ]; then tar -czf /home/ubuntu/backups/gamejava_backup_\$(date +'%Y%m%d_%H%M%S').tar.gz -C /home/ubuntu/gamejava .; fi"
+          "if [ -d '/home/ubuntu/gamejava' ] && [ \"\$(ls -A /home/ubuntu/gamejava)\" ]; then sudo tar -czf /home/ubuntu/backups/gamejava_backup_\$(date +'%Y%m%d_%H%M%S').tar.gz -C /home/ubuntu/gamejava .; fi && sudo chown -R ubuntu:ubuntu /home/ubuntu/backups"
 
       # --- TRANSFERÊNCIA E COMPILAÇÃO ---
       - name: Transferir novos arquivos da aplicação
@@ -47,20 +47,18 @@ jobs:
         run: |
           rm -f /tmp/private_key
 
-      # --- REQUISITO: NOTIFICAÇÃO DE SUCESSO (DISCORD OU SLACK) ---
-      - name: Notificar Sucesso (Discord)
+      # --- REQUISITO: NOTIFICAÇÃO DE SUCESSO (SLACK) ---
+      - name: Notificar Sucesso (Slack)
         if: success()
         run: |
-          curl -H "Content-Type: application/json" \
-          -X POST \
-          -d '{"content": "✅ **Deploy realizado com sucesso!**\n- **Repositório:** `${{ github.repository }}`\n- **Commit:** `${{ github.sha }}`\n- **Servidor:** `${{ secrets.HOST }}`"}' \
-          ${{ secrets.DISCORD_WEBHOOK }}
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":"✅ *Deploy realizado com sucesso!*\n- *Repositório:* ${{ github.repository }}\n- *Commit:* ${{ github.sha }}\n- *Servidor:* ${{ secrets.HOST }}"}' \
+          "${{ secrets.SLACK }}"
 
-      # --- REQUISITO: NOTIFICAÇÃO DE ERRO (DISCORD OU SLACK) ---
-      - name: Notificar Falha/Erro (Discord)
+      # --- REQUISITO: NOTIFICAÇÃO DE FALHA (SLACK) ---
+      - name: Notificar Falha (Slack)
         if: failure()
         run: |
-          curl -H "Content-Type: application/json" \
-          -X POST \
-          -d '{"content": "🚨 **FALHA NO DEPLOY!**\nO processo de publicação falhou. Verifique os logs no GitHub Actions.\n- **Repositório:** `${{ github.repository }}`\n- **Commit:** `${{ github.sha }}`"}' \
-          ${{ secrets.DISCORD_WEBHOOK }}
+          curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":"🚨 *FALHA NO DEPLOY!*\nO processo de publicação falhou. Verifique os logs no GitHub Actions."}' \
+          "${{ secrets.SLACK }}"
