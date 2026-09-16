@@ -1,0 +1,53 @@
+name: Publicacao Automatica - Game Java
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cria chave privada temporaria
+        run: |
+          echo "${{ secrets.KEY }}" > /tmp/private_key
+          chmod 600 /tmp/private_key
+
+      - name: Garantir que o diretorio da aplicacao existe na VM
+        run: |
+          ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
+          "sudo mkdir -p /home/ubuntu/gamejava"
+
+      - name: Ajustar permissoes no servidor
+        run: |
+          ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
+          "sudo chown -R ubuntu:ubuntu /home/ubuntu/gamejava && sudo chmod -R 755 /home/ubuntu/gamejava"
+
+      - name: Transferir arquivos da aplicacao (Java + Public)
+        run: |
+          scp -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r ${{ github.workspace }}/* ubuntu@${{ secrets.HOST }}:/home/ubuntu/gamejava
+
+      - name: Compilar codigo Java no servidor
+        run: |
+          ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
+          "cd /home/ubuntu/gamejava && javac Server.java"
+
+      - name: Reiniciar o servico da aplicacao Java
+        run: |
+          ssh -i /tmp/private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${{ secrets.HOST }} \
+          "sudo systemctl restart gamejava.service"
+
+      - name: Limpa arquivo de chave privada
+        if: always()
+        run: |
+          rm -f /tmp/private_key
+
+      - name: Notificar pelo Slack (Opcional)
+        continue-on-error: true
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"Deploy do Game Java realizado com sucesso!"}' \
+            ${{ secrets.SLACK }}
